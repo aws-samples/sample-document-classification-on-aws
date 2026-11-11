@@ -1,0 +1,21 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# Copy to terraform.tfvars. Every apply and destroy then uses the same Region.
+region = "eu-west-1"
+
+# Lower this for short tests, to keep less CloudWatch Logs storage.
+log_retention_days = 365
+
+# Only for browser uploads to the presigned URLs. API and CLI clients need none.
+# cors_allowed_origins = ["https://portal.example.com"]
+
+# Tier 3. See docs/usage.md before setting this.
+# tier3_endpoints = {
+#   team = {
+#     image_uri         = "763104351884.dkr.ecr.eu-west-1.amazonaws.com/huggingface-pytorch-inference:2.6.0-transformers5.5.3-cpu-py312-ubuntu22.04"
+#     model_data_url    = "s3://docclass-artefacts-111122223333/training/team/model.tar.gz"
+#     memory_size_in_mb = 4096
+#     max_concurrency   = 5
+#   }
+# }

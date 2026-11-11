@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "docclass cascade configuration",
+  "type": "object",
+  "required": ["config_version", "taxonomy_version", "classes", "tiers"],
+  "properties": {
+    "config_version": {"type": "string", "minLength": 1},
+    "taxonomy_version": {"type": "string", "minLength": 1, "pattern": "^[^#]+$"},
+    "classes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "not": {"enum": ["UNKNOWN"]}}
+    },
+    "tiers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string", "enum": ["char_ngram_lr", "titan_nn", "sagemaker"]},
+          "enabled": {"type": "boolean"},
+          "timeout_ms": {"type": "number", "minimum": 0, "exclusiveMinimum": true},
+          "thresholds": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0, "maximum": 1}},
+          "per_class": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {"type": "number", "minimum": 0, "maximum": 1}
+            }
+          }
+        }
+      }
+    },
+    "agreement": {"type": "array", "items": {"type": "string"}},
+    "unit_prices": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0}}
+  }
+}

@@ -1,0 +1,222 @@
+{
+  "StartAt": "WhichTier",
+  "States": {
+    "WhichTier": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.tier",
+          "StringEquals": "ngram",
+          "Next": "TrainNgram"
+        },
+        {
+          "Variable": "$.tier",
+          "StringEquals": "titan",
+          "Next": "BuildTitanIndex"
+        }
+      ],
+      "Default": "UnknownTier"
+    },
+    "TrainNgram": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+      "Parameters": {
+        "TrainingJobName.$": "$.job_name",
+        "RoleArn": "${training_role_arn}",
+        "AlgorithmSpecification": {
+          "TrainingImage": "${sklearn_image}",
+          "TrainingInputMode": "File"
+        },
+        "HyperParameters": {
+          "sagemaker_program": "\"ngram_entry.py\"",
+          "sagemaker_submit_directory": "\"s3://${artefact_bucket}/releases/${release_version}/training-source.tar.gz\"",
+          "namespace.$": "$.namespace",
+          "taxonomy_version.$": "$.taxonomy_version",
+          "classes.$": "$.classes"
+        },
+        "InputDataConfig": [
+          {
+            "ChannelName": "train",
+            "DataSource": {
+              "S3DataSource": {
+                "S3DataType": "S3Prefix",
+                "S3DataDistributionType": "FullyReplicated",
+                "S3Uri.$": "States.Format('s3://${data_bucket}/labelled/{}/', $.namespace)"
+              }
+            }
+          }
+        ],
+        "OutputDataConfig": {
+          "S3OutputPath.$": "States.Format('s3://${artefact_bucket}/training/{}/', $.namespace)",
+          "KmsKeyId": "${kms_key_arn}"
+        },
+        "ResourceConfig": {
+          "InstanceType": "ml.m5.large",
+          "InstanceCount": 1,
+          "VolumeSizeInGB": 10,
+          "VolumeKmsKeyId": "${kms_key_arn}"
+        },
+        "StoppingCondition": {
+          "MaxRuntimeInSeconds": 3600
+        },
+        "Tags": [
+          {
+            "Key": "namespace",
+            "Value.$": "$.namespace"
+          }
+        ]
+      },
+      "ResultSelector": {
+        "model_artifacts.$": "$.ModelArtifacts.S3ModelArtifacts"
+      },
+      "ResultPath": "$.training",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TrainingFailed"
+        }
+      ],
+      "Next": "RegisterNgram"
+    },
+    "RegisterNgram": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${register_arn}",
+        "Payload": {
+          "namespace.$": "$.namespace",
+          "tier": "ngram",
+          "job_name.$": "$.job_name",
+          "model_artifacts.$": "$.training.model_artifacts"
+        }
+      },
+      "ResultSelector": {
+        "value.$": "$.Payload"
+      },
+      "ResultPath": "$.registered",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Next": "Done",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TrainingFailed"
+        }
+      ]
+    },
+    "BuildTitanIndex": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${titan_index_arn}",
+        "Payload": {
+          "namespace.$": "$.namespace",
+          "taxonomy_version.$": "$.taxonomy_version",
+          "job_name.$": "$.job_name"
+        }
+      },
+      "ResultSelector": {
+        "value.$": "$.Payload"
+      },
+      "ResultPath": "$.index",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Next": "RegisterTitan",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TrainingFailed"
+        }
+      ]
+    },
+    "RegisterTitan": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${register_arn}",
+        "Payload": {
+          "namespace.$": "$.namespace",
+          "tier": "titan",
+          "job_name.$": "$.job_name",
+          "artefact_key.$": "$.index.value.artefact_key",
+          "report_key.$": "$.index.value.report_key",
+          "model_version.$": "$.index.value.model_version"
+        }
+      },
+      "ResultSelector": {
+        "value.$": "$.Payload"
+      },
+      "ResultPath": "$.registered",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Next": "Done",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TrainingFailed"
+        }
+      ]
+    },
+    "UnknownTier": {
+      "Type": "Fail",
+      "Error": "UnknownTier",
+      "Cause": "tier must be ngram or titan"
+    },
+    "TrainingFailed": {
+      "Type": "Fail",
+      "Error": "TrainingFailed",
+      "Cause": "see execution history"
+    },
+    "Done": {
+      "Type": "Succeed"
+    }
+  }
+}

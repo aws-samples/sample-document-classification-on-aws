@@ -1,0 +1,8 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+bucket       = "docclass-terraform-state-ACCOUNT_ID"
+key          = "docclass/silo/terraform.tfstate"
+region       = "eu-west-1"
+encrypt      = true
+use_lockfile = true

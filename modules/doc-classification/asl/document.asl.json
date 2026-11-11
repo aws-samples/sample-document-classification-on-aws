@@ -1,0 +1,576 @@
+{
+  "StartAt": "Preflight",
+  "States": {
+    "Preflight": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${preflight_arn}",
+        "Payload": {
+          "namespace.$": "$.namespace",
+          "job_id.$": "$.job_id",
+          "key.$": "$.key"
+        }
+      },
+      "ResultSelector": {
+        "value.$": "$.Payload"
+      },
+      "ResultPath": "$.preflight",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Next": "PreflightOutcome",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "MarkFailed"
+        }
+      ]
+    },
+    "PreflightOutcome": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.preflight.value.status",
+          "StringEquals": "rejected",
+          "Next": "MarkRejected"
+        }
+      ],
+      "Default": "Dedup"
+    },
+    "MarkRejected": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${finalize_arn}",
+        "Payload": {
+          "namespace.$": "$.namespace",
+          "job_id.$": "$.job_id",
+          "action": "rejected",
+          "reason.$": "$.preflight.value.reason"
+        }
+      },
+      "ResultSelector": {
+        "value.$": "$.Payload"
+      },
+      "ResultPath": "$.final",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Next": "NotifyFailed"
+    },
+    "Dedup": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${dedup_arn}",
+        "Payload": {
+          "namespace.$": "$.namespace",
+          "job_id.$": "$.job_id",
+          "doc_hash.$": "$.preflight.value.doc_hash"
+        }
+      },
+      "ResultSelector": {
+        "value.$": "$.Payload"
+      },
+      "ResultPath": "$.dedup",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        },
+        {
+          "ErrorEquals": [
+            "NamespaceNotConfigured"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 5,
+          "BackoffRate": 1.5,
+          "JitterStrategy": "NONE"
+        }
+      ],
+      "Next": "DedupOutcome",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "MarkFailed"
+        }
+      ]
+    },
+    "DedupOutcome": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.dedup.value.hit",
+          "BooleanEquals": true,
+          "Next": "NotifyDedup"
+        }
+      ],
+      "Default": "AcquireSlot"
+    },
+    "NotifyDedup": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "docclass",
+            "EventBusName": "${event_bus}",
+            "DetailType.$": "$.dedup.value.detail_type",
+            "Detail.$": "$.dedup.value.detail"
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "Done"
+    },
+    "AcquireSlot": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${semaphore_table}",
+        "Key": {
+          "pk": {
+            "S.$": "States.Format('ns#{}#slots', $.namespace)"
+          }
+        },
+        "UpdateExpression": "SET #e = :now, expires_at = :exp ADD slots :one",
+        "ConditionExpression": "attribute_not_exists(#e) AND (attribute_not_exists(slots) OR slots < :limit)",
+        "ExpressionAttributeNames": {
+          "#e.$": "$$.Execution.Id"
+        },
+        "ExpressionAttributeValues": {
+          ":one": {
+            "N": "1"
+          },
+          ":now": {
+            "S.$": "$$.State.EnteredTime"
+          },
+          ":exp": {
+            "N.$": "States.Format('{}', $.preflight.value.lease_expires_at)"
+          },
+          ":limit": {
+            "N.$": "States.Format('{}', $.preflight.value.max_concurrent_jobs)"
+          }
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.RequestLimitExceeded",
+            "DynamoDB.InternalServerErrorException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "ResultPath": null,
+          "Next": "WaitForSlot"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "MarkFailed"
+        }
+      ],
+      "Next": "TextLayer"
+    },
+    "WaitForSlot": {
+      "Type": "Wait",
+      "Seconds": 5,
+      "Next": "AcquireSlot"
+    },
+    "TextLayer": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${text_layer_arn}",
+        "Payload": {
+          "namespace.$": "$.namespace",
+          "job_id.$": "$.job_id",
+          "key.$": "$.key",
+          "doc_hash.$": "$.preflight.value.doc_hash"
+        }
+      },
+      "ResultSelector": {
+        "value.$": "$.Payload"
+      },
+      "ResultPath": "$.text",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Next": "NeedsOcr",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ReleaseSlotOnError"
+        }
+      ]
+    },
+    "NeedsOcr": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.text.value.needs_ocr",
+          "BooleanEquals": true,
+          "Next": "TextractStart"
+        }
+      ],
+      "Default": "Classify"
+    },
+    "TextractStart": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${textract_start_arn}",
+        "Payload": {
+          "token.$": "$$.Task.Token",
+          "input": {
+            "namespace.$": "$.namespace",
+            "job_id.$": "$.job_id",
+            "doc_hash.$": "$.preflight.value.doc_hash",
+            "text.$": "$.text.value"
+          }
+        }
+      },
+      "TimeoutSeconds": 3600,
+      "ResultPath": "$.ocr",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ReleaseSlotOnError"
+        }
+      ],
+      "Next": "Classify"
+    },
+    "Classify": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${classify_arn}",
+        "Payload": {
+          "namespace.$": "$.namespace",
+          "job_id.$": "$.job_id",
+          "doc_hash.$": "$.preflight.value.doc_hash"
+        }
+      },
+      "ResultSelector": {
+        "value.$": "$.Payload"
+      },
+      "ResultPath": "$.classify",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        },
+        {
+          "ErrorEquals": [
+            "NamespaceNotConfigured"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 5,
+          "BackoffRate": 1.5,
+          "JitterStrategy": "NONE"
+        }
+      ],
+      "Next": "ReleaseSlot",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ReleaseSlotOnError"
+        }
+      ]
+    },
+    "ReleaseSlot": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${semaphore_table}",
+        "Key": {
+          "pk": {
+            "S.$": "States.Format('ns#{}#slots', $.namespace)"
+          }
+        },
+        "UpdateExpression": "REMOVE #e ADD slots :minus",
+        "ConditionExpression": "attribute_exists(#e)",
+        "ExpressionAttributeNames": {
+          "#e.$": "$$.Execution.Id"
+        },
+        "ExpressionAttributeValues": {
+          ":minus": {
+            "N": "-1"
+          }
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.RequestLimitExceeded",
+            "DynamoDB.InternalServerErrorException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "ResultPath": null,
+          "Next": "Notify"
+        }
+      ],
+      "Next": "Notify"
+    },
+    "Notify": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "docclass",
+            "EventBusName": "${event_bus}",
+            "DetailType.$": "$.classify.value.detail_type",
+            "Detail.$": "$.classify.value.detail"
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "Done"
+    },
+    "ReleaseSlotOnError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${semaphore_table}",
+        "Key": {
+          "pk": {
+            "S.$": "States.Format('ns#{}#slots', $.namespace)"
+          }
+        },
+        "UpdateExpression": "REMOVE #e ADD slots :minus",
+        "ConditionExpression": "attribute_exists(#e)",
+        "ExpressionAttributeNames": {
+          "#e.$": "$$.Execution.Id"
+        },
+        "ExpressionAttributeValues": {
+          ":minus": {
+            "N": "-1"
+          }
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.RequestLimitExceeded",
+            "DynamoDB.InternalServerErrorException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "MarkFailed"
+        }
+      ],
+      "Next": "MarkFailed"
+    },
+    "MarkFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${finalize_arn}",
+        "Payload": {
+          "namespace.$": "$.namespace",
+          "job_id.$": "$.job_id",
+          "action": "failed",
+          "error.$": "$.error"
+        }
+      },
+      "ResultSelector": {
+        "value.$": "$.Payload"
+      },
+      "ResultPath": "$.final",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Next": "NotifyFailed"
+    },
+    "NotifyFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "docclass",
+            "EventBusName": "${event_bus}",
+            "DetailType.$": "$.final.value.detail_type",
+            "Detail.$": "$.final.value.detail"
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "FailedOutcome"
+    },
+    "FailedOutcome": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.final.value.detail.status",
+          "StringEquals": "Rejected",
+          "Next": "Done"
+        }
+      ],
+      "Default": "Failed"
+    },
+    "Done": {
+      "Type": "Succeed"
+    },
+    "Failed": {
+      "Type": "Fail",
+      "Error": "DocumentFailed",
+      "Cause": "see job record"
+    }
+  }
+}
