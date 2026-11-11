@@ -10,7 +10,7 @@ dependencies = ["numpy==2.2.6"]
 
 [project.optional-dependencies]
 aws = ["boto3==1.43.108"]
-pdf = ["pypdf==6.21.2"]
+pdf = ["pypdf==6.21.4"]
 train = ["scikit-learn==1.7.2"]
 
 [tool.setuptools.packages.find]

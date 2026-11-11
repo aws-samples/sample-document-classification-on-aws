@@ -19,7 +19,7 @@ mkdir -p "${OUT}" "${WORK}/lambda" "${WORK}/training"
   --python-version 3.12 \
   --only-binary=:all: \
   --target "${WORK}/lambda" \
-  "numpy==2.2.6" "pypdf==6.21.2"
+  "numpy==2.2.6" "pypdf==6.21.4"
 
 rsync -a --exclude '__pycache__' --exclude '*.pyc' "${ROOT}/docclass" "${WORK}/lambda/"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' "${ROOT}/service" "${WORK}/lambda/"

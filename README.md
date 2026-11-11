@@ -359,7 +359,7 @@ on your machine:
 | Package | Version | Used for | License |
 |---|---|---|---|
 | [NumPy](https://pypi.org/project/numpy/) | 2.2.6 | Tier 1 scoring and tier 2 index (library and Lambda package) | BSD-3-Clause |
-| [pypdf](https://pypi.org/project/pypdf/) | 6.21.2 | Reading the PDF text layer (`pdf` extra and Lambda package) | BSD-3-Clause |
+| [pypdf](https://pypi.org/project/pypdf/) | 6.21.4 | Reading the PDF text layer (`pdf` extra and Lambda package) | BSD-3-Clause |
 | [boto3](https://pypi.org/project/boto3/) | 1.43.108 | AWS calls (`aws` extra; provided by the Lambda runtime) | Apache-2.0 |
 | [scikit-learn](https://pypi.org/project/scikit-learn/) | 1.7.2 | Training tier 1 (`train` extra and the SageMaker training job) | BSD-3-Clause |
 | [awscurl](https://pypi.org/project/awscurl/) | 0.44 | The SigV4-signed onboarding call | MIT |
