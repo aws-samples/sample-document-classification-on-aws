@@ -406,3 +406,17 @@ The rules that keep this honest:
    starts only once the spec is `Approved`.
 
 See `specs/README.md` for the requirement format.
+
+## Security
+
+If you discover a potential security issue in this project, notify AWS/Amazon
+Security via our
+[vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/).
+Please do **not** create a public GitHub issue. See
+[CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more
+information.
+
+## License
+
+This library is licensed under the MIT-0 License. See the [LICENSE](LICENSE)
+file.
